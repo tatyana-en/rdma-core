@@ -43,7 +43,11 @@
 
 #define DR_RULE_MAX_STES	20
 #define DR_ACTION_MAX_STES	7
+/* Use up to 14 send rings. This number provided the best performance */
+#define DR_MAX_SEND_RINGS	14
+#define NUM_OF_LOCKS		DR_MAX_SEND_RINGS
 #define WIRE_PORT		0xFFFF
+#define ECPF_PORT		0xFFFE
 #define DR_STE_SVLAN		0x1
 #define DR_STE_CVLAN		0x2
 #define CVLAN_ETHERTYPE	0x8100
@@ -51,6 +55,7 @@
 #define NUM_OF_FLEX_PARSERS	8
 #define DR_STE_MAX_FLEX_0_ID	3
 #define DR_STE_MAX_FLEX_1_ID	7
+#define DR_VPORTS_BUCKETS	256
 
 #define dr_dbg(dmn, arg...) dr_dbg_ctx((dmn)->ctx, ##arg)
 
@@ -133,13 +138,20 @@ enum dr_matcher_criteria {
 	DR_MATCHER_CRITERIA_MISC2	= 1 << 3,
 	DR_MATCHER_CRITERIA_MISC3	= 1 << 4,
 	DR_MATCHER_CRITERIA_MISC4	= 1 << 5,
-	DR_MATCHER_CRITERIA_MAX		= 1 << 6,
+	DR_MATCHER_CRITERIA_MISC5       = 1 << 6,
+	DR_MATCHER_CRITERIA_MAX		= 1 << 7,
 };
 
 enum dr_matcher_definer {
+	DR_MATCHER_DEFINER_0	= 0,
+	DR_MATCHER_DEFINER_2	= 2,
+	DR_MATCHER_DEFINER_6	= 6,
+	DR_MATCHER_DEFINER_16	= 16,
 	DR_MATCHER_DEFINER_22	= 22,
 	DR_MATCHER_DEFINER_24	= 24,
 	DR_MATCHER_DEFINER_25	= 25,
+	DR_MATCHER_DEFINER_26	= 26,
+	DR_MATCHER_DEFINER_28   = 28
 };
 
 enum dr_action_type {
@@ -402,14 +414,14 @@ dr_ste_conv_modify_hdr_sw_field(struct dr_ste_ctx *ste_ctx,
 
 struct dr_ste_ctx *dr_ste_get_ctx(uint8_t version);
 void dr_ste_free(struct dr_ste *ste,
-		 struct mlx5dv_dr_matcher *matcher,
-		 struct dr_matcher_rx_tx *nic_matcher);
+		 struct mlx5dv_dr_rule *rule,
+		 struct dr_rule_rx_tx *nic_rule);
 static inline void dr_ste_put(struct dr_ste *ste,
-			      struct mlx5dv_dr_matcher *matcher,
-			      struct dr_matcher_rx_tx *nic_matcher)
+			      struct mlx5dv_dr_rule *rule,
+			      struct dr_rule_rx_tx *nic_rule)
 {
 	if (atomic_fetch_sub(&ste->refcount, 1) == 1)
-		dr_ste_free(ste, matcher, nic_matcher);
+		dr_ste_free(ste, rule, nic_rule);
 }
 
 /* initial as 0, increased only when ste appears in a new rule */
@@ -428,7 +440,8 @@ int dr_ste_create_next_htbl(struct mlx5dv_dr_matcher *matcher,
 			    struct dr_matcher_rx_tx *nic_matcher,
 			    struct dr_ste *ste,
 			    uint8_t *cur_hw_ste,
-			    enum dr_icm_chunk_size log_table_size);
+			    enum dr_icm_chunk_size log_table_size,
+			    uint8_t send_ring_idx);
 
 /* STE build functions */
 int dr_ste_build_pre_check(struct mlx5dv_dr_domain *dmn,
@@ -554,6 +567,29 @@ void dr_ste_build_flex_parser_1(struct dr_ste_ctx *ste_ctx,
 				struct dr_ste_build *sb,
 				struct dr_match_param *mask,
 				bool inner, bool rx);
+void dr_ste_build_tunnel_header_0_1(struct dr_ste_ctx *ste_ctx,
+				    struct dr_ste_build *sb,
+				    struct dr_match_param *mask,
+				    bool inner, bool rx);
+int dr_ste_build_def0(struct dr_ste_ctx *ste_ctx,
+		      struct dr_ste_build *sb,
+		      struct dr_match_param *mask,
+		      struct dr_devx_caps *caps,
+		      bool inner, bool rx);
+int dr_ste_build_def2(struct dr_ste_ctx *ste_ctx,
+		      struct dr_ste_build *sb,
+		      struct dr_match_param *mask,
+		      struct dr_devx_caps *caps,
+		      bool inner, bool rx);
+int dr_ste_build_def6(struct dr_ste_ctx *ste_ctx,
+		      struct dr_ste_build *sb,
+		      struct dr_match_param *mask,
+		      bool inner, bool rx);
+int dr_ste_build_def16(struct dr_ste_ctx *ste_ctx,
+		       struct dr_ste_build *sb,
+		       struct dr_match_param *mask,
+		       struct dr_devx_caps *caps,
+		       bool inner, bool rx);
 int dr_ste_build_def22(struct dr_ste_ctx *ste_ctx,
 		       struct dr_ste_build *sb,
 		       struct dr_match_param *mask,
@@ -563,6 +599,14 @@ int dr_ste_build_def24(struct dr_ste_ctx *ste_ctx,
 		       struct dr_match_param *mask,
 		       bool inner, bool rx);
 int dr_ste_build_def25(struct dr_ste_ctx *ste_ctx,
+		       struct dr_ste_build *sb,
+		       struct dr_match_param *mask,
+		       bool inner, bool rx);
+int dr_ste_build_def26(struct dr_ste_ctx *ste_ctx,
+		       struct dr_ste_build *sb,
+		       struct dr_match_param *mask,
+		       bool inner, bool rx);
+int dr_ste_build_def28(struct dr_ste_ctx *ste_ctx,
 		       struct dr_ste_build *sb,
 		       struct dr_match_param *mask,
 		       bool inner, bool rx);
@@ -600,6 +644,11 @@ struct dr_match_spec {
 	uint32_t ip_protocol:8;	/* IP protocol */
 	uint32_t tcp_dport:16;	/* TCP destination port. ;tcp and udp sport/dport are mutually exclusive */
 	uint32_t tcp_sport:16;	/* TCP source port.;tcp and udp sport/dport are mutually exclusive */
+	uint32_t ipv4_ihl:4;
+	uint32_t l3_ok:1;
+	uint32_t l4_ok:1;
+	uint32_t ipv4_checksum_ok:1;
+	uint32_t l4_checksum_ok:1;
 	uint32_t ip_ttl_hoplimit:8;
 	uint32_t udp_dport:16;	/* UDP destination port.;tcp and udp sport/dport are mutually exclusive */
 	uint32_t udp_sport:16;	/* UDP source port.;tcp and udp sport/dport are mutually exclusive */
@@ -704,6 +753,26 @@ struct dr_match_misc4 {
 	uint32_t prog_sample_field_id_2;
 	uint32_t prog_sample_field_value_3;
 	uint32_t prog_sample_field_id_3;
+	uint32_t prog_sample_field_value_4;
+	uint32_t prog_sample_field_id_4;
+	uint32_t prog_sample_field_value_5;
+	uint32_t prog_sample_field_id_5;
+	uint32_t prog_sample_field_value_6;
+	uint32_t prog_sample_field_id_6;
+	uint32_t prog_sample_field_value_7;
+	uint32_t prog_sample_field_id_7;
+};
+
+struct dr_match_misc5 {
+	uint32_t macsec_tag_0;
+	uint32_t macsec_tag_1;
+	uint32_t macsec_tag_2;
+	uint32_t macsec_tag_3;
+	uint32_t tunnel_header_0;
+	uint32_t tunnel_header_1;
+	uint32_t tunnel_header_2;
+	uint32_t tunnel_header_3;
+	uint32_t reserved[0x8];
 };
 
 struct dr_match_param {
@@ -713,6 +782,7 @@ struct dr_match_param {
 	struct dr_match_misc2	misc2;
 	struct dr_match_misc3	misc3;
 	struct dr_match_misc4	misc4;
+	struct dr_match_misc5	misc5;
 };
 
 #define DR_MASK_IS_ICMPV4_SET(_misc3) ((_misc3)->icmpv4_type || \
@@ -729,9 +799,15 @@ struct dr_esw_caps {
 };
 
 struct dr_devx_vport_cap {
-	uint16_t gvmi;
+	uint16_t vport_gvmi;
+	uint16_t vhca_gvmi;
 	uint64_t icm_address_rx;
 	uint64_t icm_address_tx;
+	uint16_t num;
+	uint32_t metadata_c;
+	uint32_t metadata_c_mask;
+	/* locate vports table */
+	struct dr_devx_vport_cap *next;
 };
 
 struct dr_devx_roce_cap {
@@ -741,7 +817,27 @@ struct dr_devx_roce_cap {
 	uint8_t qp_ts_format;
 };
 
+struct dr_vports_table {
+	struct dr_devx_vport_cap *buckets[DR_VPORTS_BUCKETS];
+};
+
+struct dr_devx_vports {
+	/* E-Switch manager */
+	struct dr_devx_vport_cap	esw_mngr;
+	/* Uplink */
+	struct dr_devx_vport_cap	wire;
+	/* PF + VFS + SF */
+	struct dr_vports_table		*vports;
+	/* IB ports to vport + other_vports */
+	struct dr_devx_vport_cap	**ib_ports;
+	/* Number of vports PF + VFS + SFS + WIRE */
+	uint32_t			num_ports;
+	/* Protect vport query and add*/
+	pthread_spinlock_t		lock;
+};
+
 struct dr_devx_caps {
+	struct mlx5dv_dr_domain		*dmn;
 	uint16_t			gvmi;
 	uint64_t			nic_rx_drop_address;
 	uint64_t			nic_tx_drop_address;
@@ -764,6 +860,7 @@ struct dr_devx_caps {
 	uint8_t				flex_parser_id_gtpu_teid;
 	uint8_t				flex_parser_id_gtpu_dw_2;
 	uint8_t				flex_parser_id_gtpu_first_ext_dw_0;
+	uint8_t				definer_supp_checksum;
 	uint8_t				max_ft_level;
 	uint8_t				sw_format_ver;
 	bool				isolate_vl_tc;
@@ -774,11 +871,11 @@ struct dr_devx_caps {
 	bool				rx_sw_owner_v2;
 	bool				tx_sw_owner_v2;
 	bool				fdb_sw_owner_v2;
-	uint32_t			num_vports;
-	struct dr_devx_vport_cap	*vports_caps;
 	struct dr_devx_roce_cap		roce_caps;
 	uint64_t			definer_format_sup;
 	bool				prio_tag_required;
+	bool				is_ecpf;
+	struct dr_devx_vports		vports;
 };
 
 struct dr_devx_flow_table_attr {
@@ -846,23 +943,25 @@ struct dr_domain_rx_tx {
 	uint64_t		default_icm_addr;
 	enum dr_domain_nic_type	type;
 	/* protect rx/tx domain */
-	pthread_spinlock_t	lock;
+	pthread_spinlock_t	locks[NUM_OF_LOCKS];
 };
 
 struct dr_domain_info {
 	bool			supp_sw_steering;
 	uint32_t		max_inline_size;
-	uint32_t		max_send_wr;
 	uint32_t		max_log_sw_icm_sz;
 	uint32_t		max_log_action_icm_sz;
+	uint32_t		max_send_size;
 	struct dr_domain_rx_tx	rx;
 	struct dr_domain_rx_tx	tx;
 	struct ibv_device_attr_ex attr;
 	struct dr_devx_caps	caps;
+	bool			use_mqs;
 };
 
 enum dr_domain_flags {
 	 DR_DOMAIN_FLAG_MEMORY_RECLAIM = 1 << 0,
+	 DR_DOMAIN_FLAG_DISABLE_DUPLICATE_RULES = 1 << 1,
 };
 
 struct mlx5dv_dr_domain {
@@ -874,20 +973,57 @@ struct mlx5dv_dr_domain {
 	atomic_int			refcount;
 	struct dr_icm_pool		*ste_icm_pool;
 	struct dr_icm_pool		*action_icm_pool;
-	struct dr_send_ring		*send_ring;
+	struct dr_send_ring		*send_ring[DR_MAX_SEND_RINGS];
 	struct dr_domain_info		info;
 	struct list_head		tbl_list;
 	uint32_t			flags;
+	/* protect debug lists of all tracked objects */
+	pthread_spinlock_t		debug_lock;
 };
+
+static inline int dr_domain_nic_lock_init(struct dr_domain_rx_tx *nic_dmn)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < NUM_OF_LOCKS; i++) {
+		ret = pthread_spin_init(&nic_dmn->locks[i], PTHREAD_PROCESS_PRIVATE);
+		if (ret) {
+			errno = ret;
+			goto destroy_locks;
+		}
+	}
+	return 0;
+
+destroy_locks:
+	while (i--)
+		pthread_spin_destroy(&nic_dmn->locks[i]);
+
+	return ret;
+}
+
+static inline void dr_domain_nic_lock_uninit(struct dr_domain_rx_tx *nic_dmn)
+{
+	int i;
+
+	for (i = 0; i < NUM_OF_LOCKS; i++)
+		pthread_spin_destroy(&nic_dmn->locks[i]);
+}
 
 static inline void dr_domain_nic_lock(struct dr_domain_rx_tx *nic_dmn)
 {
-	pthread_spin_lock(&nic_dmn->lock);
+	int i;
+
+	for (i = 0; i < NUM_OF_LOCKS; i++)
+		pthread_spin_lock(&nic_dmn->locks[i]);
 }
 
 static inline void dr_domain_nic_unlock(struct dr_domain_rx_tx *nic_dmn)
 {
-	pthread_spin_unlock(&nic_dmn->lock);
+	int i;
+
+	for (i = 0; i < NUM_OF_LOCKS; i++)
+		pthread_spin_unlock(&nic_dmn->locks[i]);
 }
 
 static inline void dr_domain_lock(struct mlx5dv_dr_domain *dmn)
@@ -926,6 +1062,7 @@ struct dr_matcher_rx_tx {
 	uint8_t				num_of_builders;
 	uint64_t			default_icm_addr;
 	struct dr_table_rx_tx		*nic_tbl;
+	bool				fixed_size;
 };
 
 struct mlx5dv_dr_matcher {
@@ -1030,7 +1167,6 @@ struct mlx5dv_dr_action {
 		struct {
 			struct mlx5dv_dr_domain		*dmn;
 			struct dr_devx_vport_cap	*caps;
-			uint32_t			num;
 		} vport;
 		struct {
 			uint32_t	vlan_hdr;
@@ -1069,6 +1205,7 @@ struct dr_htbl_connect_info {
 struct dr_rule_rx_tx {
 	struct dr_matcher_rx_tx		*nic_matcher;
 	struct dr_ste			*last_rule_ste;
+	uint8_t				lock_index;
 };
 
 struct mlx5dv_dr_rule {
@@ -1080,9 +1217,40 @@ struct mlx5dv_dr_rule {
 		};
 		struct ibv_flow *flow;
 	};
-	struct list_head	rule_actions_list;
 	struct list_node	rule_list;
+	struct mlx5dv_dr_action	**actions;
+	uint16_t		num_actions;
 };
+
+static inline void
+dr_rule_lock(struct dr_rule_rx_tx *nic_rule, uint8_t *hw_ste)
+{
+	struct dr_matcher_rx_tx *nic_matcher = nic_rule->nic_matcher;
+	struct dr_domain_rx_tx *nic_dmn = nic_matcher->nic_tbl->nic_dmn;
+	uint32_t index;
+
+	if (nic_matcher->fixed_size) {
+		if (hw_ste) {
+			index = dr_ste_calc_hash_index(hw_ste, nic_matcher->s_htbl);
+			nic_rule->lock_index = index % NUM_OF_LOCKS;
+		}
+		pthread_spin_lock(&nic_dmn->locks[nic_rule->lock_index]);
+	} else {
+		pthread_spin_lock(&nic_dmn->locks[0]);
+	}
+}
+
+static inline void
+dr_rule_unlock(struct dr_rule_rx_tx *nic_rule)
+{
+	struct dr_matcher_rx_tx *nic_matcher = nic_rule->nic_matcher;
+	struct dr_domain_rx_tx *nic_dmn = nic_matcher->nic_tbl->nic_dmn;
+
+	if (nic_matcher->fixed_size)
+		pthread_spin_unlock(&nic_dmn->locks[nic_rule->lock_index]);
+	else
+		pthread_spin_unlock(&nic_dmn->locks[0]);
+}
 
 void dr_rule_set_last_member(struct dr_rule_rx_tx *nic_rule,
 			     struct dr_ste *ste,
@@ -1140,6 +1308,9 @@ dr_icm_pool_chunk_size_to_byte(enum dr_icm_chunk_size chunk_size,
 	return entry_size * num_of_entries;
 }
 
+void dr_icm_pool_set_pool_max_log_chunk_sz(struct dr_icm_pool *pool,
+					   enum dr_icm_chunk_size max_log_chunk_sz);
+
 static inline int
 dr_ste_htbl_increase_threshold(struct dr_ste_htbl *htbl)
 {
@@ -1158,18 +1329,6 @@ dr_ste_htbl_may_grow(struct dr_ste_htbl *htbl)
 		return false;
 
 	return true;
-}
-
-static inline struct dr_devx_vport_cap
-*dr_get_vport_cap(struct dr_devx_caps *caps, uint32_t vport)
-{
-	if (!caps->vports_caps ||
-	    (vport >= caps->num_vports && vport != WIRE_PORT)) {
-		errno = EINVAL;
-		return NULL;
-	}
-
-	return &caps->vports_caps[vport == WIRE_PORT ? caps->num_vports : vport];
 }
 
 /* internal API functions */
@@ -1281,6 +1440,14 @@ static inline bool dr_is_root_table(struct mlx5dv_dr_table *tbl)
 	return tbl->level == 0;
 }
 
+bool dr_domain_is_support_ste_icm_size(struct mlx5dv_dr_domain *dmn,
+				       uint32_t req_log_icm_sz);
+bool dr_domain_set_max_ste_icm_size(struct mlx5dv_dr_domain *dmn,
+				    uint32_t req_log_icm_sz);
+int dr_rule_rehash_matcher_s_anchor(struct mlx5dv_dr_matcher *matcher,
+				    struct dr_matcher_rx_tx *nic_matcher,
+				    enum dr_icm_chunk_size new_size);
+
 struct dr_icm_pool *dr_icm_pool_create(struct mlx5dv_dr_domain *dmn,
 				       enum dr_icm_type icm_type);
 void dr_icm_pool_destroy(struct dr_icm_pool *pool);
@@ -1295,7 +1462,8 @@ int dr_ste_htbl_init_and_postsend(struct mlx5dv_dr_domain *dmn,
 				  struct dr_domain_rx_tx *nic_dmn,
 				  struct dr_ste_htbl *htbl,
 				  struct dr_htbl_connect_info *connect_info,
-				  bool update_hw_ste);
+				  bool update_hw_ste,
+				  uint8_t send_ring_idx);
 void dr_ste_set_formated_ste(struct dr_ste_ctx *ste_ctx,
 			     uint16_t gvmi,
 			     enum dr_domain_nic_type nic_type,
@@ -1349,7 +1517,6 @@ struct dr_cq {
 };
 
 #define MAX_SEND_CQE		64
-#define MIN_READ_SYNC		64
 
 struct dr_send_ring {
 	struct dr_cq		cq;
@@ -1359,31 +1526,32 @@ struct dr_send_ring {
 	uint32_t		pending_wqe;
 	/* Signal request per this trash hold value */
 	uint16_t		signal_th;
-	/* Each post_send_size less than max_post_send_size */
-	uint32_t		max_post_send_size;
+	uint32_t                max_inline_size;
 	/* manage the send queue */
 	uint32_t		tx_head;
 	/* protect QP/CQ operations */
 	pthread_spinlock_t	lock;
 	void			*buf;
 	uint32_t		buf_size;
-	struct ibv_wc		wc[MAX_SEND_CQE];
-	uint8_t			sync_buff[MIN_READ_SYNC];
+	void			*sync_buff;
 	struct ibv_mr		*sync_mr;
 };
 
 int dr_send_ring_alloc(struct mlx5dv_dr_domain *dmn);
-void dr_send_ring_free(struct dr_send_ring *send_ring);
+void dr_send_ring_free(struct mlx5dv_dr_domain *dmn);
 int dr_send_ring_force_drain(struct mlx5dv_dr_domain *dmn);
 bool dr_send_allow_fl(struct dr_devx_caps *caps);
 int dr_send_postsend_ste(struct mlx5dv_dr_domain *dmn, struct dr_ste *ste,
-			 uint8_t *data, uint16_t size, uint16_t offset);
+			 uint8_t *data, uint16_t size, uint16_t offset,
+			 uint8_t ring_idx);
 int dr_send_postsend_htbl(struct mlx5dv_dr_domain *dmn, struct dr_ste_htbl *htbl,
-			  uint8_t *formated_ste, uint8_t *mask);
+			  uint8_t *formated_ste, uint8_t *mask,
+			  uint8_t send_ring_idx);
 int dr_send_postsend_formated_htbl(struct mlx5dv_dr_domain *dmn,
 				   struct dr_ste_htbl *htbl,
 				   uint8_t *ste_init_data,
-				   bool update_hw_ste);
+				   bool update_hw_ste,
+				   uint8_t send_ring_idx);
 int dr_send_postsend_action(struct mlx5dv_dr_domain *dmn,
 			    struct mlx5dv_dr_action *action);
 /* buddy functions & structure */
@@ -1415,4 +1583,14 @@ int dr_buddy_init(struct dr_icm_buddy_mem *buddy, uint32_t max_order);
 void dr_buddy_cleanup(struct dr_icm_buddy_mem *buddy);
 int dr_buddy_alloc_mem(struct dr_icm_buddy_mem *buddy, int order);
 void dr_buddy_free_mem(struct dr_icm_buddy_mem *buddy, uint32_t seg, int order);
+
+void dr_vports_table_add_wire(struct dr_devx_vports *vports);
+void dr_vports_table_del_wire(struct dr_devx_vports *vports);
+struct dr_devx_vport_cap *dr_vports_table_get_vport_cap(struct dr_devx_caps *caps,
+							uint16_t vport);
+struct dr_devx_vport_cap *dr_vports_table_get_ib_port_cap(struct dr_devx_caps *caps,
+							  uint32_t ib_port);
+struct dr_vports_table *dr_vports_table_create(struct mlx5dv_dr_domain *dmn);
+void dr_vports_table_destroy(struct dr_vports_table *vports_tbl);
+
 #endif

@@ -49,6 +49,56 @@
 
 struct verbs_device;
 
+enum {
+	VERBS_LOG_LEVEL_NONE,
+	VERBS_LOG_ERR,
+	VERBS_LOG_WARN,
+	VERBS_LOG_INFO,
+	VERBS_LOG_DEBUG,
+};
+
+void __verbs_log(struct verbs_context *ctx, uint32_t level,
+		 const char *fmt, ...);
+
+#define verbs_log(ctx, level, format, arg...)                                  \
+do {                                                                           \
+	int tmp = errno;                                                       \
+	__verbs_log(ctx, level, "%s: %s:%d: " format,                          \
+		    (ctx)->context.device->name, __func__, __LINE__, ##arg);   \
+	errno = tmp;                                                           \
+} while (0)
+
+#define verbs_debug(ctx, format, arg...) \
+	verbs_log(ctx, VERBS_LOG_DEBUG, format, ##arg)
+
+#define verbs_info(ctx, format, arg...) \
+	verbs_log(ctx, VERBS_LOG_INFO, format, ##arg)
+
+#define verbs_warn(ctx, format, arg...) \
+	verbs_log(ctx, VERBS_LOG_WARN, format, ##arg)
+
+#define verbs_err(ctx, format, arg...) \
+	verbs_log(ctx, VERBS_LOG_ERR, format, ##arg)
+
+#ifdef VERBS_DEBUG
+#define verbs_log_datapath(ctx, level, format, arg...) \
+	verbs_log(ctx, level, format, ##arg)
+#else
+#define verbs_log_datapath(ctx, level, format, arg...) {}
+#endif
+
+#define verbs_debug_datapath(ctx, format, arg...) \
+	verbs_log_datapath(ctx, VERBS_LOG_DEBUG, format, ##arg)
+
+#define verbs_info_datapath(ctx, format, arg...) \
+	verbs_log_datapath(ctx, VERBS_LOG_INFO, format, ##arg)
+
+#define verbs_warn_datapath(ctx, format, arg...) \
+	verbs_log_datapath(ctx, VERBS_LOG_WARN, format, ##arg)
+
+#define verbs_err_datapath(ctx, format, arg...) \
+	verbs_log_datapath(ctx, VERBS_LOG_ERR, format, ##arg)
+
 enum verbs_xrcd_mask {
 	VERBS_XRCD_HANDLE	= 1 << 0,
 	VERBS_XRCD_RESERVED	= 1 << 1
@@ -370,6 +420,8 @@ struct verbs_context_ops {
 			  struct ibv_port_attr *port_attr);
 	int (*query_qp)(struct ibv_qp *qp, struct ibv_qp_attr *attr,
 			int attr_mask, struct ibv_qp_init_attr *init_attr);
+	int (*query_qp_data_in_order)(struct ibv_qp *qp, enum ibv_wr_opcode op,
+				      uint32_t flags);
 	int (*query_rt_values)(struct ibv_context *context,
 			       struct ibv_values_ex *values);
 	int (*query_srq)(struct ibv_srq *srq, struct ibv_srq_attr *srq_attr);

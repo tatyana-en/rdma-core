@@ -529,6 +529,8 @@ enum ibv_wc_opcode {
 	IBV_WC_TM_RECV,
 	IBV_WC_TM_NO_TAG,
 	IBV_WC_DRIVER1,
+	IBV_WC_DRIVER2,
+	IBV_WC_DRIVER3,
 };
 
 enum {
@@ -2208,8 +2210,8 @@ extern const struct verbs_device_ops verbs_provider_cxgb4;
 extern const struct verbs_device_ops verbs_provider_efa;
 extern const struct verbs_device_ops verbs_provider_hfi1verbs;
 extern const struct verbs_device_ops verbs_provider_hns;
-extern const struct verbs_device_ops verbs_provider_i40iw;
 extern const struct verbs_device_ops verbs_provider_ipathverbs;
+extern const struct verbs_device_ops verbs_provider_irdma;
 extern const struct verbs_device_ops verbs_provider_mlx4;
 extern const struct verbs_device_ops verbs_provider_mlx5;
 extern const struct verbs_device_ops verbs_provider_mthca;
@@ -3146,6 +3148,20 @@ ibv_modify_qp_rate_limit(struct ibv_qp *qp,
 
 	return vctx->modify_qp_rate_limit(qp, attr);
 }
+
+/**
+ * ibv_query_qp_data_in_order - Checks whether the data is guaranteed to be
+ *   written in-order.
+ * @qp: The QP to query.
+ * @op: Operation type.
+ * @flags: Extra field for future input. For now must be 0.
+ *
+ * Return Value
+ * ibv_query_qp_data_in_order() returns 1 if the data is guaranteed to be
+ *   written in-order, 0 otherwise.
+ */
+int ibv_query_qp_data_in_order(struct ibv_qp *qp, enum ibv_wr_opcode op,
+			       uint32_t flags);
 
 /**
  * ibv_query_qp - Returns the attribute list and current values for the

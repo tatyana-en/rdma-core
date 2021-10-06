@@ -654,7 +654,8 @@ static int print_hca_cap(struct ibv_device *ib_dev, uint8_t ib_port)
 				printf("\t\t\tphys_state:\t\t%s (%d)\n",
 				       port_phy_state_str(port_attr.phys_state), port_attr.phys_state);
 
-			if (print_all_port_gids(ctx, &port_attr, port))
+			rc = print_all_port_gids(ctx, &port_attr, port);
+			if (rc)
 				goto cleanup;
 		}
 		printf("\n");
@@ -761,14 +762,16 @@ int main(int argc, char *argv[])
 
 		if (!*dev_list) {
 			fprintf(stderr, "IB device '%s' wasn't found\n", ib_devname);
-			return -1;
+			ret = -1;
+			goto out;
 		}
 
 		ret |= print_hca_cap(*dev_list, ib_port);
 	} else {
 		if (!*dev_list) {
 			fprintf(stderr, "No IB devices found\n");
-			return -1;
+			ret = -1;
+			goto out;
 		}
 
 		while (*dev_list) {
@@ -777,6 +780,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
+out:
 	if (ib_devname)
 		free(ib_devname);
 

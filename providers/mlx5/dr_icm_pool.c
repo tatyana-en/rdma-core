@@ -43,6 +43,7 @@ struct dr_icm_pool {
 	pthread_spinlock_t	lock;
 	struct list_head	buddy_mem_list;
 	uint64_t		hot_memory_size;
+	bool			syncing;
 };
 
 struct dr_icm_mr {
@@ -54,7 +55,8 @@ struct dr_icm_mr {
 static int
 dr_icm_allocate_aligned_dm(struct dr_icm_pool *pool,
 			   struct dr_icm_mr *icm_mr,
-			   struct ibv_alloc_dm_attr *dm_attr)
+			   struct ibv_alloc_dm_attr *dm_attr,
+			   uint64_t *ofsset_in_dm)
 {
 	struct mlx5dv_alloc_dm_attr mlx5_dm_attr = {};
 	size_t log_align_base = 0;
@@ -77,6 +79,7 @@ dr_icm_allocate_aligned_dm(struct dr_icm_pool *pool,
 	}
 
 	dm_attr->length = size;
+	*ofsset_in_dm = 0;
 
 alloc_dm:
 	icm_mr->dm = mlx5dv_alloc_dm(pool->dmn->ctx, dm_attr, &mlx5_dm_attr);
@@ -101,6 +104,9 @@ alloc_dm:
 			/* increase the address to start from aligned size */
 			icm_mr->icm_start_addr = icm_mr->icm_start_addr +
 				(align_base - align_diff);
+			*ofsset_in_dm = align_base - align_diff;
+			/* return the size to its original val */
+			dm_attr->length = size;
 			return 0;
 		}
 
@@ -118,6 +124,7 @@ static struct dr_icm_mr *
 dr_icm_pool_mr_create(struct dr_icm_pool *pool)
 {
 	struct ibv_alloc_dm_attr dm_attr = {};
+	uint64_t align_offset_in_dm;
 	struct dr_icm_mr *icm_mr;
 
 	icm_mr = calloc(1, sizeof(struct dr_icm_mr));
@@ -126,11 +133,11 @@ dr_icm_pool_mr_create(struct dr_icm_pool *pool)
 		return NULL;
 	}
 
-	if (dr_icm_allocate_aligned_dm(pool, icm_mr, &dm_attr))
+	if (dr_icm_allocate_aligned_dm(pool, icm_mr, &dm_attr, &align_offset_in_dm))
 		goto free_icm_mr;
 
 	/* Register device memory */
-	icm_mr->mr = ibv_reg_dm_mr(pool->dmn->pd, icm_mr->dm, 0,
+	icm_mr->mr = ibv_reg_dm_mr(pool->dmn->pd, icm_mr->dm, align_offset_in_dm,
 				   dm_attr.length,
 				   IBV_ACCESS_ZERO_BASED |
 				   IBV_ACCESS_REMOTE_WRITE |
@@ -323,42 +330,61 @@ static bool dr_icm_pool_is_sync_required(struct dr_icm_pool *pool)
 	return false;
 }
 
+/* In order to gain performance FW command is done out of the lock */
 static int dr_icm_pool_sync_pool_buddies(struct dr_icm_pool *pool)
 {
 	struct dr_icm_buddy_mem *buddy, *tmp_buddy;
+	struct dr_icm_chunk *chunk, *tmp_chunk;
+	struct list_head sync_list;
+	bool need_reclaim = false;
 	int err;
 
+	list_head_init(&sync_list);
+
+	list_for_each_safe(&pool->buddy_mem_list, buddy, tmp_buddy, list_node)
+		list_append_list(&sync_list, &buddy->hot_list);
+
+	pool->syncing = true;
+
+	pthread_spin_unlock(&pool->lock);
+
+	/* Avoid race between delete resource to its reuse on other QP */
+	dr_send_ring_force_drain(pool->dmn);
+
+	if (pool->dmn->flags & DR_DOMAIN_FLAG_MEMORY_RECLAIM)
+		need_reclaim = true;
+
 	err = dr_devx_sync_steering(pool->dmn->ctx);
-	if (err) {
+	if (err) /* Unexpected state, add debug note and continue */
 		dr_dbg(pool->dmn, "Failed devx sync hw\n");
-		return err;
+
+	pthread_spin_lock(&pool->lock);
+	list_for_each_safe(&sync_list, chunk, tmp_chunk, chunk_list) {
+		buddy = chunk->buddy_mem;
+		dr_buddy_free_mem(buddy, chunk->seg,
+				  ilog32(chunk->num_of_entries - 1));
+		buddy->used_memory -= chunk->byte_size;
+		pool->hot_memory_size -= chunk->byte_size;
+		dr_icm_chunk_destroy(chunk);
 	}
 
-	list_for_each_safe(&pool->buddy_mem_list, buddy, tmp_buddy, list_node) {
-		struct dr_icm_chunk *chunk, *tmp_chunk;
-
-		list_for_each_safe(&buddy->hot_list, chunk, tmp_chunk, chunk_list) {
-			dr_buddy_free_mem(buddy, chunk->seg,
-					  ilog32(chunk->num_of_entries - 1));
-			buddy->used_memory -= chunk->byte_size;
-			pool->hot_memory_size -= chunk->byte_size;
-			dr_icm_chunk_destroy(chunk);
-		}
-
-		if ((pool->dmn->flags & DR_DOMAIN_FLAG_MEMORY_RECLAIM) &&
-		    !buddy->used_memory)
-			dr_icm_buddy_destroy(buddy);
+	if (need_reclaim) {
+		list_for_each_safe(&pool->buddy_mem_list, buddy, tmp_buddy, list_node)
+			if (!buddy->used_memory)
+				dr_icm_buddy_destroy(buddy);
 	}
 
-	return 0;
+	pool->syncing = false;
+	return err;
 }
 
 int dr_icm_pool_sync_pool(struct dr_icm_pool *pool)
 {
-	int ret;
+	int ret = 0;
 
 	pthread_spin_lock(&pool->lock);
-	ret = dr_icm_pool_sync_pool_buddies(pool);
+	if (!pool->syncing)
+		ret = dr_icm_pool_sync_pool_buddies(pool);
 	pthread_spin_unlock(&pool->lock);
 
 	return ret;
@@ -417,12 +443,13 @@ struct dr_icm_chunk *dr_icm_alloc_chunk(struct dr_icm_pool *pool,
 	int ret;
 	int seg;
 
+	pthread_spin_lock(&pool->lock);
+
 	if (chunk_size > pool->max_log_chunk_sz) {
 		errno = EINVAL;
-		return NULL;
+		goto out;
 	}
 
-	pthread_spin_lock(&pool->lock);
 	/* find mem, get back the relevant buddy pool and seg in that mem */
 	ret = dr_icm_handle_buddies_get_mem(pool, chunk_size, &buddy, &seg);
 	if (ret)
@@ -444,18 +471,27 @@ out:
 void dr_icm_free_chunk(struct dr_icm_chunk *chunk)
 {
 	struct dr_icm_buddy_mem *buddy = chunk->buddy_mem;
+	struct dr_icm_pool *pool = buddy->pool;
 
 	/* move the memory to the waiting list AKA "hot" */
-	pthread_spin_lock(&buddy->pool->lock);
+	pthread_spin_lock(&pool->lock);
 	list_del_init(&chunk->chunk_list);
 	list_add_tail(&buddy->hot_list, &chunk->chunk_list);
 	buddy->pool->hot_memory_size += chunk->byte_size;
 
 	/* Check if we have chunks that are waiting for sync-ste */
-	if (dr_icm_pool_is_sync_required(buddy->pool))
+	if (dr_icm_pool_is_sync_required(pool) && !pool->syncing)
 		dr_icm_pool_sync_pool_buddies(buddy->pool);
 
-	pthread_spin_unlock(&buddy->pool->lock);
+	pthread_spin_unlock(&pool->lock);
+}
+
+void dr_icm_pool_set_pool_max_log_chunk_sz(struct dr_icm_pool *pool,
+					   enum dr_icm_chunk_size max_log_chunk_sz)
+{
+	pthread_spin_lock(&pool->lock);
+	pool->max_log_chunk_sz = max_log_chunk_sz;
+	pthread_spin_unlock(&pool->lock);
 }
 
 struct dr_icm_pool *dr_icm_pool_create(struct mlx5dv_dr_domain *dmn,

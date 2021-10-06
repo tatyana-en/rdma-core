@@ -77,7 +77,7 @@ endif()
 set(PACKAGE_NAME "RDMA")
 
 # See Documentation/versioning.md
-set(PACKAGE_VERSION "36.0")
+set(PACKAGE_VERSION "38.0")
 # When this is changed the values in these files need changing too:
 #   debian/control
 #   debian/libibverbs1.symbols
@@ -669,7 +669,7 @@ add_subdirectory(providers/cxgb4) # NO SPARSE
 add_subdirectory(providers/efa)
 add_subdirectory(providers/efa/man)
 add_subdirectory(providers/hns)
-add_subdirectory(providers/i40iw) # NO SPARSE
+add_subdirectory(providers/irdma)
 add_subdirectory(providers/mlx4)
 add_subdirectory(providers/mlx4/man)
 add_subdirectory(providers/mlx5)

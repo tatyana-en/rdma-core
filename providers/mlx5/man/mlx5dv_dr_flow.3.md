@@ -10,11 +10,11 @@ footer: mlx5
 
 # NAME
 
-mlx5dv_dr_domain_create, mlx5dv_dr_domain_sync, mlx5dv_dr_domain_destroy, mlx5dv_dr_domain_set_reclaim_device_memory - Manage flow domains
+mlx5dv_dr_domain_create, mlx5dv_dr_domain_sync, mlx5dv_dr_domain_destroy, mlx5dv_dr_domain_set_reclaim_device_memory, mlx5dv_dr_domain_allow_duplicate_rules - Manage flow domains
 
 mlx5dv_dr_table_create, mlx5dv_dr_table_destroy - Manage flow tables
 
-mlx5dv_dr_matcher_create, mlx5dv_dr_matcher_destroy - Manage flow matchers
+mlx5dv_dr_matcher_create, mlx5dv_dr_matcher_destroy, mlx5dv_dr_matcher_set_layout - Manage flow matchers
 
 mlx5dv_dr_rule_create, mlx5dv_dr_rule_destroy - Manage flow rules
 
@@ -24,7 +24,15 @@ mlx5dv_dr_action_create_default_miss - Create default miss action
 
 mlx5dv_dr_action_create_tag - Create tag actions
 
-mlx5dv_dr_action_create_dest_ibv_qp, mlx5dv_dr_action_create_dest_table, mlx5dv_dr_action_create_dest_vport, mlx5dv_dr_action_create_dest_devx_tir - Create packet destination actions
+mlx5dv_dr_action_create_dest_ibv_qp - Create packet destination QP action
+
+mlx5dv_dr_action_create_dest_table  - Create packet destination dr table action
+
+mlx5dv_dr_action_create_dest_vport - Create packet destination vport action
+
+mlx5dv_dr_action_create_dest_ib_port - Create packet destination IB port action
+
+mlx5dv_dr_action_create_dest_devx_tir - Create packet destination TIR action
 
 mlx5dv_dr_action_create_dest_array - Create destination array action
 
@@ -65,6 +73,8 @@ void mlx5dv_dr_domain_set_reclaim_device_memory(
 		struct mlx5dv_dr_domain *dmn,
 		bool enable);
 
+void mlx5dv_dr_domain_allow_duplicate_rules(struct mlx5dv_dr_domain *dmn, bool allow);
+
 struct mlx5dv_dr_table *mlx5dv_dr_table_create(
 		struct mlx5dv_dr_domain *domain,
 		uint32_t level);
@@ -78,6 +88,9 @@ struct mlx5dv_dr_matcher *mlx5dv_dr_matcher_create(
 		struct mlx5dv_flow_match_parameters *mask);
 
 int mlx5dv_dr_matcher_destroy(struct mlx5dv_dr_matcher *matcher);
+
+
+int mlx5dv_dr_matcher_set_layout(struct mlx5dv_dr_matcher *matcher, struct mlx5dv_dr_matcher_layout *matcher_layout);
 
 struct mlx5dv_dr_rule *mlx5dv_dr_rule_create(
 		struct mlx5dv_dr_matcher *matcher,
@@ -103,6 +116,10 @@ struct mlx5dv_dr_action *mlx5dv_dr_action_create_dest_table(
 struct mlx5dv_dr_action *mlx5dv_dr_action_create_dest_vport(
 		struct mlx5dv_dr_domain *domain,
 		uint32_t vport);
+
+struct mlx5dv_dr_action *mlx5dv_dr_action_create_dest_ib_port(
+		struct mlx5dv_dr_domain *domain,
+		uint32_t ib_port);
 
 struct mlx5dv_dr_action *mlx5dv_dr_action_create_dest_devx_tir(
 		struct mlx5dv_devx_obj *devx_obj);
@@ -197,6 +214,8 @@ Default behavior: Forward packet to eSwitch manager vport.
 
 *mlx5dv_dr_domain_set_reclaim_device_memory()* is used to enable the reclaiming of device memory back to the system when not in use, by default this feature is disabled.
 
+*mlx5dv_dr_domain_allow_duplicate_rules()* is used to allow or prevent insertion of rules matching on same fields(duplicates) on non root tables, by default this feature is allowed.
+
 ## Table
 *mlx5dv_dr_table_create()* creates a DR table in the **domain**, at the appropriate **level**, and can be used with *mlx5dv_dr_matcher_create()* and *mlx5dv_dr_action_create_dest_table()*.
 All packets start traversing the steering domain tree at table **level** zero (0).
@@ -208,6 +227,12 @@ A table should be destroyed by calling *mlx5dv_dr_table_destroy()* once all depe
 *mlx5dv_dr_matcher_create()* create a matcher object in **table**, at sorted **priority** (lower value is check first). A matcher can hold multiple rules, all with identical **mask** of type *struct mlx5dv_flow_match_parameters* which represents the exact attributes to be compared by HW steering. The **match_criteria_enable** and **mask** are defined in a device spec format. Only the fields that where masked in the *matcher* should be filled by the rule in *mlx5dv_dr_rule_create()*.
 
 A matcher should be destroyed by calling *mlx5dv_dr_matcher_destroy()* once all depended resources are released.
+
+*mlx5dv_dr_matcher_set_layout()* is used to set specific layout parameters of a matcher, on some conditions setting some attributes might not be supported, in such cases ENOTSUP will be returned. **flags** should be a set of type *enum mlx5dv_dr_matcher_layout_flags*:
+
+**MLX5DV_DR_MATCHER_LAYOUT_RESIZABLE**: The matcher can resize its scale and resources according to the rules that are inserted or removed.
+
+**MLX5DV_DR_MATCHER_LAYOUT_NUM_RULE**: Indicates a hint from the application about the number of the rules the matcher is expected to handle. This allows preallocation of matcher resources for faster rule updates when using with non-resizable layout mode.
 
 ## Actions
 A set of action create API are defined by *mlx5dv_dr_action_create_\*()*. All action are created as *struct mlx5dv_dr_action*.
@@ -228,6 +253,7 @@ Action: Destination
 *mlx5dv_dr_action_create_dest_ibv_qp* creates a terminating action delivering the packet to a QP, defined by **ibqp**. Valid only on domain type NIC_RX.
 *mlx5dv_dr_action_create_dest_table* creates a forwarding action to another flow table, defined by **table**. The destination **table** must be from the same domain with a level higher than zero.
 *mlx5dv_dr_action_create_dest_vport* creates a forwarding action to a **vport** on the same **domain**. Valid only on domain type FDB.
+*mlx5dv_dr_action_create_dest_ib_port* creates a forwarding action to a **ib_port** on the same **domain**. The valid range of ports is a based on the capability phys_port_cnt_ex provided by ibq_query_device_ex and it is possible to query the ports details using mlx5dv_query_port. Action is supported only on domain type FDB.
 *mlx5dv_dr_action_create_dest_devx_tir* creates a terminating action delivering the packet to a TIR, defined by **devx_obj**. Valid only on domain type NIC_RX.
 
 Action: Array

@@ -205,6 +205,8 @@ cdef extern from '<infiniband/verbs.h>':
         IBV_WC_TSO
         IBV_WC_RECV
         IBV_WC_RECV_RDMA_WITH_IMM
+        IBV_WC_DRIVER2
+        IBV_WC_DRIVER3
 
     cpdef enum ibv_create_cq_wc_flags:
         IBV_WC_EX_WITH_BYTE_LEN
@@ -446,6 +448,11 @@ cdef extern from '<infiniband/verbs.h>':
         IBV_GID_TYPE_IB
         IBV_GID_TYPE_ROCE_V1
         IBV_GID_TYPE_ROCE_V2
+
+    cpdef enum ibv_fork_status:
+        IBV_FORK_DISABLED
+        IBV_FORK_ENABLED
+        IBV_FORK_UNNEEDED
 
 
 cdef extern from "<infiniband/verbs_api.h>":

@@ -106,6 +106,7 @@ enum dr_ste_v0_lu_type {
 	DR_STE_V0_LU_TYPE_GENERAL_PURPOSE		= 0x18,
 	DR_STE_V0_LU_TYPE_STEERING_REGISTERS_0		= 0x2f,
 	DR_STE_V0_LU_TYPE_STEERING_REGISTERS_1		= 0x30,
+	DR_STE_V0_LU_TYPE_TUNNEL_HEADER			= 0x34,
 	DR_STE_V0_LU_TYPE_DONT_CARE			= DR_STE_LU_TYPE_DONT_CARE,
 };
 
@@ -388,6 +389,7 @@ static void dr_ste_v0_set_rx_decap(uint8_t *hw_ste_p)
 {
 	DR_STE_SET(rx_steering_mult, hw_ste_p, tunneling_action,
 		   DR_STE_TUNL_ACTION_DECAP);
+	DR_STE_SET(rx_steering_mult, hw_ste_p, fail_on_error, 1);
 }
 
 static void dr_ste_v0_set_go_back_bit(uint8_t *hw_ste_p)
@@ -420,6 +422,7 @@ static void dr_ste_v0_set_rx_decap_l3(uint8_t *hw_ste_p, bool vlan)
 	DR_STE_SET(rx_steering_mult, hw_ste_p, tunneling_action,
 		   DR_STE_TUNL_ACTION_L3_DECAP);
 	DR_STE_SET(modify_packet, hw_ste_p, action_description, vlan ? 1 : 0);
+	DR_STE_SET(rx_steering_mult, hw_ste_p, fail_on_error, 1);
 }
 
 static void dr_ste_v0_set_rewrite_actions(uint8_t *hw_ste_p,
@@ -1156,6 +1159,7 @@ static int dr_ste_v0_build_eth_l3_ipv4_misc_tag(struct dr_match_param *value,
 	struct dr_match_spec *spec = sb->inner ? &value->inner : &value->outer;
 
 	DR_STE_SET_TAG(eth_l3_ipv4_misc, tag, time_to_live, spec, ip_ttl_hoplimit);
+	DR_STE_SET_TAG(eth_l3_ipv4_misc, tag, ihl, spec, ipv4_ihl);
 
 	return 0;
 }
@@ -1704,12 +1708,13 @@ static int dr_ste_v0_build_src_gvmi_qpn_tag(struct dr_match_param *value,
 
 	source_gvmi_set = DR_STE_GET(src_gvmi_qp, bit_mask, source_gvmi);
 	if (source_gvmi_set) {
-		vport_cap = dr_get_vport_cap(sb->caps, misc->source_port);
+		vport_cap = dr_vports_table_get_vport_cap(sb->caps,
+							  misc->source_port);
 		if (!vport_cap)
 			return errno;
 
-		if (vport_cap->gvmi)
-			DR_STE_SET(src_gvmi_qp, tag, source_gvmi, vport_cap->gvmi);
+		if (vport_cap->vport_gvmi)
+			DR_STE_SET(src_gvmi_qp, tag, source_gvmi, vport_cap->vport_gvmi);
 
 		misc->source_port = 0;
 	}
@@ -1727,15 +1732,24 @@ static void dr_ste_v0_build_src_gvmi_qpn_init(struct dr_ste_build *sb,
 	sb->ste_build_tag_func = &dr_ste_v0_build_src_gvmi_qpn_tag;
 }
 
-static void dr_ste_set_flex_parser(uint32_t *misc4_field_id,
+static void dr_ste_set_flex_parser(uint16_t lu_type,
+				   uint32_t *misc4_field_id,
 				   uint32_t *misc4_field_value,
 				   bool *parser_is_used,
 				   uint8_t *tag)
 {
 	uint32_t id = *misc4_field_id;
 	uint8_t *parser_ptr;
+	bool skip_parser;
 
-	if (parser_is_used[id])
+	/* Since this is a shared function to set flex parsers,
+	 * we need to skip it if lookup type and parser ID doesn't match
+	 */
+	skip_parser = id <= DR_STE_MAX_FLEX_0_ID ?
+		      lu_type != DR_STE_V0_LU_TYPE_FLEX_PARSER_0 :
+		      lu_type != DR_STE_V0_LU_TYPE_FLEX_PARSER_1;
+
+	if (skip_parser || parser_is_used[id])
 		return;
 
 	parser_is_used[id] = true;
@@ -1753,22 +1767,45 @@ static int dr_ste_v0_build_flex_parser_tag(struct dr_match_param *value,
 	struct dr_match_misc4 *misc_4_mask = &value->misc4;
 	bool parser_is_used[NUM_OF_FLEX_PARSERS] = {};
 
-	dr_ste_set_flex_parser(&misc_4_mask->prog_sample_field_id_0,
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_0,
 			       &misc_4_mask->prog_sample_field_value_0,
 			       parser_is_used, tag);
 
-	dr_ste_set_flex_parser(&misc_4_mask->prog_sample_field_id_1,
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_1,
 			       &misc_4_mask->prog_sample_field_value_1,
 			       parser_is_used, tag);
 
-	dr_ste_set_flex_parser(&misc_4_mask->prog_sample_field_id_2,
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_2,
 			       &misc_4_mask->prog_sample_field_value_2,
 			       parser_is_used, tag);
 
-	dr_ste_set_flex_parser(&misc_4_mask->prog_sample_field_id_3,
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_3,
 			       &misc_4_mask->prog_sample_field_value_3,
 			       parser_is_used, tag);
 
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_4,
+			       &misc_4_mask->prog_sample_field_value_4,
+			       parser_is_used, tag);
+
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_5,
+			       &misc_4_mask->prog_sample_field_value_5,
+			       parser_is_used, tag);
+
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_6,
+			       &misc_4_mask->prog_sample_field_value_6,
+			       parser_is_used, tag);
+
+	dr_ste_set_flex_parser(sb->lu_type,
+			       &misc_4_mask->prog_sample_field_id_7,
+			       &misc_4_mask->prog_sample_field_value_7,
+			       parser_is_used, tag);
 	return 0;
 }
 
@@ -1788,6 +1825,27 @@ static void dr_ste_v0_build_flex_parser_1_init(struct dr_ste_build *sb,
 	dr_ste_v0_build_flex_parser_tag(mask, sb, sb->bit_mask);
 	sb->byte_mask = dr_ste_conv_bit_to_byte_mask(sb->bit_mask);
 	sb->ste_build_tag_func = &dr_ste_v0_build_flex_parser_tag;
+}
+
+static int dr_ste_v0_build_tunnel_header_0_1_tag(struct dr_match_param *value,
+						 struct dr_ste_build *sb,
+						 uint8_t *tag)
+{
+	struct dr_match_misc5 *misc5 = &value->misc5;
+
+	DR_STE_SET_TAG(tunnel_header, tag, tunnel_header_dw0, misc5, tunnel_header_0);
+	DR_STE_SET_TAG(tunnel_header, tag, tunnel_header_dw1, misc5, tunnel_header_1);
+
+	return 0;
+}
+
+static void dr_ste_v0_build_tunnel_header_0_1_init(struct dr_ste_build *sb,
+						   struct dr_match_param *mask)
+{
+	sb->lu_type = DR_STE_V0_LU_TYPE_TUNNEL_HEADER;
+	dr_ste_v0_build_tunnel_header_0_1_tag(mask, sb, sb->bit_mask);
+	sb->byte_mask = dr_ste_conv_bit_to_byte_mask(sb->bit_mask);
+	sb->ste_build_tag_func = &dr_ste_v0_build_tunnel_header_0_1_tag;
 }
 
 static struct dr_ste_ctx ste_ctx_v0 = {
@@ -1819,6 +1877,7 @@ static struct dr_ste_ctx ste_ctx_v0 = {
 	.build_src_gvmi_qpn_init	= &dr_ste_v0_build_src_gvmi_qpn_init,
 	.build_flex_parser_0_init	= &dr_ste_v0_build_flex_parser_0_init,
 	.build_flex_parser_1_init	= &dr_ste_v0_build_flex_parser_1_init,
+	.build_tunnel_header_0_1	= &dr_ste_v0_build_tunnel_header_0_1_init,
 	/* Getters and Setters */
 	.ste_init			= &dr_ste_v0_init,
 	.set_next_lu_type		= &dr_ste_v0_set_next_lu_type,
