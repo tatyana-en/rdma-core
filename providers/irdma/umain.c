@@ -125,6 +125,7 @@ static void i40iw_set_hw_attrs(struct irdma_uk_attrs *attrs)
 	attrs->max_hw_sq_chunk = I40IW_MAX_QUANTA_PER_WR;
 	attrs->max_hw_cq_size = I40IW_MAX_CQ_SIZE;
 	attrs->min_hw_cq_size = IRDMA_MIN_CQ_SIZE;
+	attrs->min_hw_wq_size = I40IW_MIN_WQ_SIZE;
 }
 
 /**
@@ -186,6 +187,10 @@ static struct verbs_context *irdma_ualloc_context(struct ibv_device *ibdev,
 		iwvctx->abi_ver = user_ver;
 		if (resp.comp_mask & IRDMA_ALLOC_UCTX_USE_RAW_ATTR)
 			iwvctx->use_raw_attrs = true;
+		if (resp.comp_mask & IRDMA_ALLOC_UCTX_MIN_HW_WQ_SIZE)
+			iwvctx->uk_attrs.min_hw_wq_size = resp.min_hw_wq_size;
+		else
+			iwvctx->uk_attrs.min_hw_wq_size = IRDMA_QP_SW_MIN_WQSIZE;
 		mmap_key = resp.db_mmap_key;
 	}
 
