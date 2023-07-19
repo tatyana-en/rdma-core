@@ -5,7 +5,6 @@
 
 #include "osdep.h"
 
-
 #define IRDMA_QP_TYPE_IWARP	1
 #define IRDMA_QP_TYPE_UDA	2
 #define IRDMA_QP_TYPE_ROCE_RC	3
@@ -175,7 +174,7 @@
 			(_ring).head = ((_ring).head + 1) % size; \
 			(_retcode) = 0; \
 		} else { \
-			(_retcode) = IRDMA_ERR_RING_FULL; \
+			(_retcode) = ENOMEM; \
 		} \
 	}
 #define IRDMA_RING_MOVE_HEAD_BY_COUNT(_ring, _count, _retcode) \
@@ -186,7 +185,7 @@
 			(_ring).head = ((_ring).head + (_count)) % size; \
 			(_retcode) = 0; \
 		} else { \
-			(_retcode) = IRDMA_ERR_RING_FULL; \
+			(_retcode) = ENOMEM; \
 		} \
 	}
 #define IRDMA_SQ_RING_MOVE_HEAD(_ring, _retcode) \
@@ -197,7 +196,7 @@
 			(_ring).head = ((_ring).head + 1) % size; \
 			(_retcode) = 0; \
 		} else { \
-			(_retcode) = IRDMA_ERR_RING_FULL; \
+			(_retcode) = ENOMEM; \
 		} \
 	}
 #define IRDMA_SQ_RING_MOVE_HEAD_BY_COUNT(_ring, _count, _retcode) \
@@ -208,7 +207,7 @@
 			(_ring).head = ((_ring).head + (_count)) % size; \
 			(_retcode) = 0; \
 		} else { \
-			(_retcode) = IRDMA_ERR_RING_FULL; \
+			(_retcode) = ENOMEM; \
 		} \
 	}
 #define IRDMA_RING_MOVE_HEAD_BY_COUNT_NOCHECK(_ring, _count) \

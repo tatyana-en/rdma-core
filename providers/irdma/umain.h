@@ -13,7 +13,6 @@
 #include "irdma.h"
 #include "defs.h"
 #include "i40iw_hw.h"
-#include "status.h"
 #include "user.h"
 
 #define IRDMA_BASE_PUSH_PAGE		1
